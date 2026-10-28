@@ -742,6 +742,39 @@ struct Manifest
     std::vector<EpEntry> entries;
 };
 
+
+inline void epTryReadManifest( const std::filesystem::path& disk, std::string_view dir, std::string_view name, std::vector<Manifest>& out )
+{
+    const std::string manRel  = dir.empty() ? std::string( name ) : std::string( dir ) + "/" + std::string( name );
+    const std::string manDisk = ( disk / std::string( name ) ).string();
+    if( name == "package.json" && !packageJsonManifestOk( manRel, manDisk ) )
+    {
+        return;
+    }
+    const std::optional<std::string> text = docparse::detail::readRegularFile( std::string( name ), manDisk );
+    if( !text )
+    {
+        return;
+    }
+    Manifest m{ manRel, std::string( dir ), {} };
+    if( name == "setup.cfg" )
+    {
+        parseSetupCfgEntryPoints( *text, m.entries );
+    }
+    else if( name == "pyproject.toml" )
+    {
+        parsePyprojectEntryPoints( *text, m.entries );
+    }
+    else
+    {
+        parsePackageJsonEntries( *text, m.entries );
+    }
+    if( !m.entries.empty() )
+    {
+        out.push_back( std::move( m ) );
+    }
+}
+
 // The manifests above one root-relative file path: its own directory and each ancestor up to the root, setup.cfg,
 // pyproject.toml and package.json in each, read once per directory (`seen`). Only manifests that hold entries are kept.
 inline void collectManifestsAbove( const IngestResult& ing, std::uint32_t fileId, std::vector<std::string>& seenDirs, std::vector<Manifest>& out )
@@ -756,34 +789,7 @@ inline void collectManifestsAbove( const IngestResult& ing, std::uint32_t fileId
             seenDirs.emplace_back( dir );
             for( const char* name : { "setup.cfg", "pyproject.toml", "package.json" } )
             {
-                const std::string manRel = dir.empty() ? std::string( name ) : std::string( dir ) + "/" + name;
-                const std::string manDisk = ( disk / name ).string();
-                if( std::string_view( name ) == "package.json" && !packageJsonManifestOk( manRel, manDisk ) )
-                {
-                    continue;
-                }
-                const std::optional<std::string> text = docparse::detail::readRegularFile( name, manDisk );
-                if( !text )
-                {
-                    continue;
-                }
-                Manifest m{ manRel, std::string( dir ), {} };
-                if( std::string_view( name ) == "setup.cfg" )
-                {
-                    parseSetupCfgEntryPoints( *text, m.entries );
-                }
-                else if( std::string_view( name ) == "pyproject.toml" )
-                {
-                    parsePyprojectEntryPoints( *text, m.entries );
-                }
-                else
-                {
-                    parsePackageJsonEntries( *text, m.entries );
-                }
-                if( !m.entries.empty() )
-                {
-                    out.push_back( std::move( m ) );
-                }
+                epTryReadManifest( disk, dir, name, out );
             }
         }
         if( dir.empty() )
@@ -804,30 +810,6 @@ inline void appendAttr( std::string& x, std::string_view key, std::string_view v
 // Each entry's target, resolved: its module's indexed file (epModuleFile), then ONE pass over the symbols of those files for
 // the attribute (epAttrNames): exactly one definition → Def; none or several in a module of the tree → Unresolved; no module
 // file at all → External.
-inline void epSeedOneTarget( const IngestResult& ing, std::string_view mdir, const EpEntry& e, std::vector<std::uint32_t>& files,
-                               std::vector<EpTarget>& row, std::vector<char>& wantFile )
-{
-    if( epFilePathEntry( e.group ) )
-    {
-        const std::uint32_t f = epFileTargetFile( ing, mdir, e.target );
-        files.push_back( f );
-        row.push_back( EpTarget{ f == kNoFile ? EpTargetState::External : EpTargetState::Unresolved, kNoNode } );
-        if( f != kNoFile )
-        {
-            wantFile[f] = 1;
-        }
-        return;
-    }
-    bool                inTree = false;
-    const std::uint32_t f      = epModuleFile( ing, mdir, std::string_view( e.target ).substr( 0, e.target.find( ':' ) ), inTree );
-    files.push_back( f );
-    row.push_back( EpTarget{ inTree ? EpTargetState::Unresolved : EpTargetState::External, kNoNode } );
-    if( f != kNoFile )
-    {
-        wantFile[f] = 1;
-    }
-}
-
 inline void epFillOneTarget( const IngestResult& ing, const EpEntry& entry, std::uint32_t fileId, const FileSymbols& fs, EpTarget& t )
 {
     if( fileId == kNoFile )
@@ -864,7 +846,25 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
     {
         for( const EpEntry& e : manifests[m].entries )
         {
-            epSeedOneTarget( ing, manifests[m].dir, e, moduleFile[m], targets[m], wantFile );
+            if( epFilePathEntry( e.group ) )
+            {
+                const std::uint32_t f = epFileTargetFile( ing, manifests[m].dir, e.target );
+                moduleFile[m].push_back( f );
+                targets[m].push_back( EpTarget{ f == kNoFile ? EpTargetState::External : EpTargetState::Unresolved, kNoNode } );
+                if( f != kNoFile )
+                {
+                    wantFile[f] = 1;
+                }
+                continue;
+            }
+            bool                inTree = false;
+            const std::uint32_t f      = epModuleFile( ing, manifests[m].dir, std::string_view( e.target ).substr( 0, e.target.find( ':' ) ), inTree );
+            moduleFile[m].push_back( f );
+            targets[m].push_back( EpTarget{ inTree ? EpTargetState::Unresolved : EpTargetState::External, kNoNode } );
+            if( f != kNoFile )
+            {
+                wantFile[f] = 1;
+            }
         }
     }
     const SymbolsByFile byFile = symbolsByFile( ing, [ & ]( const Symbol& s ) { return wantFile[ s.fileId ] != 0; },
@@ -1001,6 +1001,25 @@ inline void appendEpGroup( std::string& x, const IngestResult& ing, const flipim
 }
 
 }   // namespace epdetail
+
+
+inline void collectEpManifestsForShown( const IngestResult& ing, std::span<const NodeId> shown, std::vector<std::string>& seenDirs,
+                                        std::vector<epdetail::Manifest>& manifests )
+{
+    for( const NodeId id : shown )
+    {
+        if( id >= ing.symbols.size() )
+        {
+            continue;
+        }
+        const Lang lang = ing.symbols[id].lang;
+        if( lang != Lang::Python && lang != Lang::JavaScript && lang != Lang::TypeScript )
+        {
+            continue;
+        }
+        epdetail::collectManifestsAbove( ing, ing.symbols[id].fileId, seenDirs, manifests );
+    }
+}
 
 // The element(s). `shown` is the answer's ranked head (the rows <sigs> serves, rank order). Single-root runs only.
 inline EpRender renderForEpManifest( const IngestResult& ing, std::span<const NodeId> shown )
