@@ -1012,8 +1012,8 @@ inline void collectEpManifestsForShown( const IngestResult& ing, std::span<const
         {
             continue;
         }
-        const Lang lang = ing.symbols[id].lang;
-        if( lang != Lang::Python && lang != Lang::JavaScript && lang != Lang::TypeScript )
+        const std::string_view rel = rootRelPath( ing, ing.symbols[id].fileId );
+        if( !rel.ends_with( ".py" ) && !rel.ends_with( ".js" ) && !rel.ends_with( ".ts" ) )   // the languages that have a manifest reader
         {
             continue;
         }
