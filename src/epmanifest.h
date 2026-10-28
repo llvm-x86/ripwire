@@ -681,23 +681,7 @@ namespace epdetail
 
 inline bool packageJsonManifestOk( std::string_view rel, std::string_view diskPath ) noexcept
 {
-    if( rel.find( "/node_modules/" ) != std::string_view::npos || rel.starts_with( "node_modules/" ) )
-    {
-        return false;
-    }
-    return diskPath.find( "/node_modules/" ) == std::string_view::npos;
-}
-
-inline std::uint32_t epManifestRelFile( const IngestResult& ing, std::string_view rel )
-{
-    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
-    {
-        if( rootRelPath( ing, f ) == rel )
-        {
-            return f;
-        }
-    }
-    return kNoFile;
+    return !rel.contains( "/node_modules/" ) && !rel.starts_with( "node_modules/" ) && !diskPath.contains( "/node_modules/" );
 }
 
 inline std::uint32_t epFileTargetFile( const IngestResult& ing, std::string_view mdir, std::string_view target )
@@ -711,7 +695,14 @@ inline std::uint32_t epFileTargetFile( const IngestResult& ing, std::string_view
     {
         rel = std::string( mdir ) + "/" + rel;
     }
-    return epManifestRelFile( ing, rel );
+    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
+    {
+        if( rootRelPath( ing, f ) == rel )
+        {
+            return f;
+        }
+    }
+    return kNoFile;
 }
 
 inline bool epFilePathEntry( std::string_view group ) noexcept
@@ -826,6 +817,57 @@ inline void appendAttr( std::string& x, std::string_view key, std::string_view v
 // Each entry's target, resolved: its module's indexed file (epModuleFile), then ONE pass over the symbols of those files for
 // the attribute (epAttrNames): exactly one definition → Def; none or several in a module of the tree → Unresolved; no module
 // file at all → External.
+inline void epSeedOneTarget( const IngestResult& ing, std::string_view mdir, const EpEntry& e, std::vector<std::uint32_t>& files,
+                               std::vector<EpTarget>& row, std::vector<char>& wantFile )
+{
+    if( epFilePathEntry( e.group ) )
+    {
+        const std::uint32_t f = epFileTargetFile( ing, mdir, e.target );
+        files.push_back( f );
+        row.push_back( EpTarget{ f == kNoFile ? EpTargetState::External : EpTargetState::Unresolved, kNoNode } );
+        if( f != kNoFile )
+        {
+            wantFile[f] = 1;
+        }
+        return;
+    }
+    bool                inTree = false;
+    const std::uint32_t f      = epModuleFile( ing, mdir, std::string_view( e.target ).substr( 0, e.target.find( ':' ) ), inTree );
+    files.push_back( f );
+    row.push_back( EpTarget{ inTree ? EpTargetState::Unresolved : EpTargetState::External, kNoNode } );
+    if( f != kNoFile )
+    {
+        wantFile[f] = 1;
+    }
+}
+
+inline void epFillOneTarget( const IngestResult& ing, const EpEntry& entry, std::uint32_t fileId, const FileSymbols& fs, EpTarget& t )
+{
+    if( fileId == kNoFile )
+    {
+        return;
+    }
+    if( epFilePathEntry( entry.group ) )
+    {
+        if( const NodeId def = epFileEntryDef( ing, fs, fileId ); def != kNoNode )
+        {
+            t = EpTarget{ EpTargetState::Def, def };
+        }
+        return;
+    }
+    const std::size_t colon = entry.target.find( ':' );
+    if( colon == std::string_view::npos )
+    {
+        return;
+    }
+    const std::string_view attr = std::string_view( entry.target ).substr( colon + 1 );
+    const auto             hit  = [ & ]( NodeId id ) { return epAttrNames( ing.symbols[id], attr ); };
+    if( std::ranges::count_if( fs, hit ) == 1 )
+    {
+        t = EpTarget{ EpTargetState::Def, *std::ranges::find_if( fs, hit ) };
+    }
+}
+
 inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& ing, const std::vector<Manifest>& manifests )
 {
     std::vector<std::vector<EpTarget>>      targets( manifests.size() );
@@ -835,25 +877,7 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
     {
         for( const EpEntry& e : manifests[m].entries )
         {
-            if( epFilePathEntry( e.group ) )
-            {
-                const std::uint32_t f = epFileTargetFile( ing, manifests[m].dir, e.target );
-                moduleFile[m].push_back( f );
-                targets[m].push_back( EpTarget{ f == kNoFile ? EpTargetState::External : EpTargetState::Unresolved, kNoNode } );
-                if( f != kNoFile )
-                {
-                    wantFile[f] = 1;
-                }
-                continue;
-            }
-            bool                inTree = false;
-            const std::uint32_t f      = epModuleFile( ing, manifests[m].dir, std::string_view( e.target ).substr( 0, e.target.find( ':' ) ), inTree );
-            moduleFile[m].push_back( f );
-            targets[m].push_back( EpTarget{ inTree ? EpTargetState::Unresolved : EpTargetState::External, kNoNode } );
-            if( f != kNoFile )
-            {
-                wantFile[f] = 1;
-            }
+            epSeedOneTarget( ing, manifests[m].dir, e, moduleFile[m], targets[m], wantFile );
         }
     }
     const SymbolsByFile byFile = symbolsByFile( ing, [ & ]( const Symbol& s ) { return wantFile[ s.fileId ] != 0; },
@@ -862,32 +886,7 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
     {
         for( std::size_t k = 0; k < manifests[m].entries.size(); ++k )
         {
-            const EpEntry&     entry = manifests[m].entries[k];
-            const std::string& tg    = entry.target;
-            const FileSymbols& fs    = byFile[ moduleFile[m][k] ];
-            if( moduleFile[m][k] == kNoFile )
-            {
-                continue;
-            }
-            if( epFilePathEntry( entry.group ) )
-            {
-                if( const NodeId def = epFileEntryDef( ing, fs, moduleFile[m][k] ); def != kNoNode )
-                {
-                    targets[m][k] = EpTarget{ EpTargetState::Def, def };
-                }
-                continue;
-            }
-            const std::size_t colon = tg.find( ':' );
-            if( colon == std::string::npos )
-            {
-                continue;
-            }
-            const std::string_view attr = std::string_view( tg ).substr( colon + 1 );
-            const auto             hit  = [ & ]( NodeId id ) { return epAttrNames( ing.symbols[id], attr ); };
-            if( std::ranges::count_if( fs, hit ) == 1 )
-            {
-                targets[m][k] = EpTarget{ EpTargetState::Def, *std::ranges::find_if( fs, hit ) };
-            }
+            epFillOneTarget( ing, manifests[m].entries[k], moduleFile[m][k], byFile[ moduleFile[m][k] ], targets[m][k] );
         }
     }
     return targets;
@@ -1028,7 +1027,9 @@ inline EpRender renderForEpManifest( const IngestResult& ing, std::span<const No
     std::vector<epdetail::Manifest> manifests;
     for( const NodeId id : shown )   // the manifests above every shown row whose language has a manifest reader
     {
-        if( id < ing.symbols.size() && epManifestReaderLang( ing.symbols[id].lang ) )
+        if( id < ing.symbols.size()
+            && ( ing.symbols[id].lang == Lang::Python || ing.symbols[id].lang == Lang::JavaScript
+                 || ing.symbols[id].lang == Lang::TypeScript ) )
         {
             epdetail::collectManifestsAbove( ing, ing.symbols[id].fileId, seenDirs, manifests );
         }
