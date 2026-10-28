@@ -1064,8 +1064,8 @@ inline EpRender renderForEpManifest( const IngestResult& ing, std::span<const No
         {
             continue;
         }
-        const Lang lang = ing.symbols[id].lang;
-        if( lang != Lang::Python && lang != Lang::Rust )
+        const std::string_view rel = rootRelPath( ing, ing.symbols[id].fileId );
+        if( !rel.ends_with( ".py" ) && !rel.ends_with( ".rs" ) )   // the languages that have a manifest reader
         {
             continue;
         }
