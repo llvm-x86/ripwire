@@ -409,19 +409,6 @@ inline void parsePackageJsonEntries( std::string_view text, std::vector<EpEntry>
     }
 }
 
-inline bool epManifestReaderLang( Lang lang ) noexcept
-{
-    switch( lang )
-    {
-    case Lang::Python:
-    case Lang::JavaScript:
-    case Lang::TypeScript:
-        return true;
-    default:
-        return false;
-    }
-}
-
 // ── the consumer shapes: a quoted occurrence of the group literal whose line reads it as an entry-point group ──────────────
 namespace epdetail
 {
@@ -1025,15 +1012,7 @@ inline EpRender renderForEpManifest( const IngestResult& ing, std::span<const No
     }
     std::vector<std::string>        seenDirs;
     std::vector<epdetail::Manifest> manifests;
-    for( const NodeId id : shown )   // the manifests above every shown row whose language has a manifest reader
-    {
-        if( id < ing.symbols.size()
-            && ( ing.symbols[id].lang == Lang::Python || ing.symbols[id].lang == Lang::JavaScript
-                 || ing.symbols[id].lang == Lang::TypeScript ) )
-        {
-            epdetail::collectManifestsAbove( ing, ing.symbols[id].fileId, seenDirs, manifests );
-        }
-    }
+    collectEpManifestsForShown( ing, shown, seenDirs, manifests );
     if( manifests.empty() )
     {
         return out;   // no manifest above a shown row: resolveEpTargets and consumerLineIndex would each walk every symbol for nothing
