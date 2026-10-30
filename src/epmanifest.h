@@ -422,15 +422,23 @@ inline void parseCargoBins( std::string_view text, std::vector<EpEntry>& out )
             curPath.clear();
             return;
         }
-        std::string path = curPath.empty() ? "src/main.rs" : curPath;
+        // Cargo target inference when `path` is omitted: the package's own bin is src/main.rs, a named one src/bin/<name>.rs.
+        // (src/bin/<name>/main.rs is not tried: a floor, the entry then reads unresolved.)
+        std::string path = !curPath.empty() ? curPath : ( curName == pkgName ? std::string( "src/main.rs" ) : "src/bin/" + curName + ".rs" );
         out.push_back( EpEntry{ "bin", binLine, curName, path, binLine } );
         sawBin = true;
         curName.clear();
         curPath.clear();
     };
+    std::string_view multiline;   // the delimiter of an open multi-line string: its lines are values, never keys or tables
     darkflags::forEachLine( text, [ & ]( std::string_view line, std::uint32_t lineNo )
     {
         const std::string_view t = trimWs( line );
+        if( !multiline.empty() )
+        {
+            multiline = t.find( multiline ) == std::string_view::npos ? multiline : std::string_view();
+            return;
+        }
         if( t.empty() || t.front() == '#' )
         {
             return;
@@ -477,6 +485,14 @@ inline void parseCargoBins( std::string_view text, std::vector<EpEntry>& out )
         if( eq == std::string_view::npos )
         {
             return;
+        }
+        const std::string_view rhs = trimWs( t.substr( eq + 1 ) );
+        for( const std::string_view d : { std::string_view( "\"\"\"" ), std::string_view( "\'\'\'" ) } )
+        {
+            if( rhs.starts_with( d ) && rhs.find( d, 3 ) == std::string_view::npos )
+            {
+                multiline = d;
+            }
         }
         const std::vector<std::string> key = epdetail::tomlKeyParts( t.substr( 0, eq ) );
         if( key.size() != 1 || key[0].empty() )
@@ -861,10 +877,9 @@ inline std::uint32_t epEntryFile( const IngestResult& ing, std::string_view mdir
                                       : epModuleFile( ing, mdir, std::string_view( e.target ).substr( 0, colon ), inTree );
 }
 
-inline EpTargetState epEntryInitState( const EpEntry& e, bool inTree ) noexcept
+inline EpTargetState epEntryInitState( bool inTree ) noexcept
 {
-    return e.target.find( ':' ) == std::string::npos ? EpTargetState::Unresolved
-                                                     : ( inTree ? EpTargetState::Unresolved : EpTargetState::External );
+    return inTree ? EpTargetState::Unresolved : EpTargetState::External;
 }
 
 inline void epApplyTargetDef( const IngestResult& ing, const EpEntry& e, const FileSymbols& fs, EpTarget& out )
@@ -902,7 +917,7 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
             bool                inTree = false;
             const std::uint32_t f      = epEntryFile( ing, manifests[m].dir, e, inTree );
             moduleFile[m].push_back( f );
-            targets[m].push_back( EpTarget{ epEntryInitState( e, inTree ), kNoNode } );
+            targets[m].push_back( EpTarget{ epEntryInitState( inTree ), kNoNode } );
             if( f != kNoFile )
             {
                 wantFile[f] = 1;
@@ -1093,11 +1108,13 @@ inline EpRender renderForEpManifest( const IngestResult& ing, std::span<const No
     const std::vector<std::vector<EpConsumer>> consumers = findGroupConsumers( ing, literals );
     const flipimpact::SymbolLineIndex          lineIx    = epdetail::consumerLineIndex( ing, consumers );
     std::vector<char>                          esc;
+    const std::vector<EpConsumer>              noConsumers;
     for( std::size_t pi = 0; pi < picks.size(); ++pi )
     {
+        const bool cargo = manifests[ picks[pi].m ].rel.ends_with( "Cargo.toml" );   // a bin name is no group literal: nothing to scan
         const std::string groupsCap = ( pi == 0 && groupsTotal > picks.size() ) ? std::format( " groups_capped=\"1\" groups_total=\"{}\"", groupsTotal ) : std::string();
         epdetail::appendEpGroup( out.xml, ing, lineIx, manifests[ picks[pi].m ], targets[ picks[pi].m ], picks[pi].group,
-                                 consumers[ std::size_t( std::ranges::find( literals, picks[pi].group ) - literals.begin() ) ], groupsCap, esc );
+                                 cargo ? noConsumers : consumers[ std::size_t( std::ranges::find( literals, picks[pi].group ) - literals.begin() ) ], groupsCap, esc );
     }
     return out;
 }
