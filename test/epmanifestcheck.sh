@@ -63,7 +63,7 @@ verdict(){ if [ "$1" -eq 0 ]; then ok "$2"; else no "$3"; fi; }   # rc, the PASS
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
 FX="$ROOT/test/epmanifestfix"
-[ -f "$FX/edge/setup.cfg" ] && [ -f "$FX/edgetoml/pyproject.toml" ] && [ -f "$FX/cfg/setup.cfg" ] && [ -f "$FX/pyp/pyproject.toml" ] && [ -f "$FX/negcfg/config.cfg" ] && [ -f "$FX/sib/setup.cfg" ] && [ -f "$FX/pkgjson/package.json" ] && [ -f "$FX/pkgjsonstr/package.json" ] || { echo "fixture test/epmanifestfix missing"; exit 2; }
+[ -f "$FX/edge/setup.cfg" ] && [ -f "$FX/edgetoml/pyproject.toml" ] && [ -f "$FX/cfg/setup.cfg" ] && [ -f "$FX/pyp/pyproject.toml" ] && [ -f "$FX/negcfg/config.cfg" ] && [ -f "$FX/sib/setup.cfg" ] && [ -f "$FX/pkgjson/package.json" ] && [ -f "$FX/pkgjsonstr/package.json" ] && [ -f "$FX/pkgjsonmiss/package.json" ] && [ -f "$FX/pkgjsonexp/package.json" ] && [ -f "$FX/pkgjsonempty/package.json" ] && [ -f "$FX/pkgjsonnm/package.json" ] && [ -f "$FX/pkgjsonnm/node_modules/dep/package.json" ] && [ -f "$FX/pkgjsonts/package.json" ] || { echo "fixture test/epmanifestfix missing"; exit 2; }
 
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
@@ -166,14 +166,19 @@ if has "$PKGJSONSTR" "any(g.get('group')=='bin' and any(e.get('n')=='cli-pkg' an
 if has "$PKGJSONMISS" "any(g.get('group')=='bin' and any(e.get('n')=='tool' and e.get('target')=='missing/cli.js' and e.get('external')=='1' for e in g['e']) and any(e.get('n')=='ok' and e.get('target')=='index.js' and 'def' in e for e in g['e']) for g in d)"; then
     ok "J3 a bin path outside the tree is external=1 beside an in-tree bin"; else no "J3 missing bin path: $PKGJSONMISS"; fi
 # J4
+if grep -q 'n="run"' "$TMP/pkgjsonexp"; then ok "J4 positive: run row shown"; else no "J4 positive: run row not shown (query did not reach src/index.js)"; fi
 [ "$PKGJSONEXP" = "[]" ]; verdict $? "J4 exports-only package.json yields no <ep>" "J4 exports produced rows: $PKGJSONEXP"
 # J5
+if grep -q 'n="idle"' "$TMP/pkgjsonempty"; then ok "J5 positive: idle row shown"; else no "J5 positive: idle row not shown"; fi
 [ "$PKGJSONEMPTY" = "[]" ]; verdict $? "J5 no bin/main yields no <ep>" "J5 empty manifest produced rows: $PKGJSONEMPTY"
 # J6
 if has "$PKGJSONNM" "any(g['p']=='package.json' and g.get('group')=='bin' for g in d) and not any('node_modules' in g.get('p','') for g in d)"; then
     ok "J6 node_modules package.json is ignored; root bin still rides"; else no "J6 node_modules: $PKGJSONNM"; fi
+if grep -q 'n="depStart"' "$TMP/pkgjsonnmdep"; then ok "J6b positive: depStart row shown"; else no "J6b positive: depStart row not shown"; fi
+if grep -q 'n="rootStart"' "$TMP/pkgjsonnm"; then ok "J6b positive: root bin row shown in sibling root fixture"; else no "J6b positive: rootStart row not shown in pkgjsonnm"; fi
 [ "$PKGJSONNMDEP" = "[]" ]; verdict $? "J6b a package.json under node_modules yields no <ep>" "J6b node_modules package.json produced rows: $PKGJSONNMDEP" 
 # J7
+if grep -q 'n="run"' "$TMP/pkgjsonts"; then ok "J7 positive: run row shown (src/index.ts)"; else no "J7 positive: run row not shown"; fi
 [ "$PKGJSONTS" = "[]" ]; verdict $? "J7 TS main -> missing dist/ yields no <ep>" "J7 TS dist main produced rows: $PKGJSONTS" 
 # N1
 [ "$NEG" = "[]" ]; verdict $? "N1 a non-manifest .cfg yields no <ep>" "N1 config.cfg produced rows: $NEG"

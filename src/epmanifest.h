@@ -348,7 +348,12 @@ inline std::uint32_t jsonKeyLine( std::string_view text, std::string_view key )
     const std::string needle = std::format( "\"{}\"", key );
     darkflags::forEachLine( text, [ & ]( std::string_view line, std::uint32_t lineNo )
     {
-        if( found != 0 || line.find( needle ) == std::string_view::npos )
+        if( found != 0 )
+        {
+            return;
+        }
+        const std::size_t at = line.find( needle );
+        if( at == std::string_view::npos || !trimWs( line.substr( at + needle.size() ) ).starts_with( ':' ) )
         {
             return;
         }
@@ -692,9 +697,9 @@ inline std::uint32_t epFileTargetFile( const IngestResult& ing, std::string_view
     return kNoFile;
 }
 
-inline bool epFilePathEntry( std::string_view group ) noexcept
+inline bool epPackageJsonManifest( std::string_view rel ) noexcept
 {
-    return group == "bin" || group == "main";
+    return rel.ends_with( "package.json" );
 }
 
 inline NodeId epFileEntryDef( const IngestResult& ing, const FileSymbols& fs, std::uint32_t fileId )
@@ -702,6 +707,14 @@ inline NodeId epFileEntryDef( const IngestResult& ing, const FileSymbols& fs, st
     NodeId modScope = kNoNode;
     NodeId exportFn = kNoNode;
     std::uint32_t exportLine = UINT32_MAX;
+    std::vector<const Binding*> exports;
+    for( const Binding& b : ing.bindings )
+    {
+        if( b.fileId == fileId && b.kind == LocalBindKind::JsExport )
+        {
+            exports.push_back( &b );
+        }
+    }
     for( const NodeId id : fs )
     {
         const Symbol& s = ing.symbols[id];
@@ -713,12 +726,9 @@ inline NodeId epFileEntryDef( const IngestResult& ing, const FileSymbols& fs, st
         {
             continue;
         }
-        for( const Binding& b : ing.bindings )
+        for( const Binding* bp : exports )
         {
-            if( b.fileId != fileId || b.kind != LocalBindKind::JsExport )
-            {
-                continue;
-            }
+            const Binding&         b     = *bp;
             const std::string_view local = b.importedName.empty() ? std::string_view( b.var ) : std::string_view( b.importedName );
             if( local != s.name || s.sigStartByte < b.spanStart || s.endByte > b.spanEnd )
             {
@@ -746,7 +756,7 @@ struct Manifest
 inline void epTryReadManifest( const std::filesystem::path& disk, std::string_view dir, std::string_view name, std::vector<Manifest>& out )
 {
     const std::string manRel  = dir.empty() ? std::string( name ) : std::string( dir ) + "/" + std::string( name );
-    const std::string manDisk = ( disk / std::string( name ) ).string();
+    const std::string manDisk = ( disk / std::string( name ) ).generic_string();
     if( name == "package.json" && !packageJsonManifestOk( manRel, manDisk ) )
     {
         return;
@@ -810,13 +820,14 @@ inline void appendAttr( std::string& x, std::string_view key, std::string_view v
 // Each entry's target, resolved: its module's indexed file (epModuleFile), then ONE pass over the symbols of those files for
 // the attribute (epAttrNames): exactly one definition → Def; none or several in a module of the tree → Unresolved; no module
 // file at all → External.
-inline void epFillOneTarget( const IngestResult& ing, const EpEntry& entry, std::uint32_t fileId, const FileSymbols& fs, EpTarget& t )
+inline void epFillOneTarget( const IngestResult& ing, const EpEntry& entry, std::uint32_t fileId, const FileSymbols& fs, EpTarget& t,
+                             bool packageJson )
 {
     if( fileId == kNoFile )
     {
         return;
     }
-    if( epFilePathEntry( entry.group ) )
+    if( packageJson )
     {
         if( const NodeId def = epFileEntryDef( ing, fs, fileId ); def != kNoNode )
         {
@@ -846,7 +857,7 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
     {
         for( const EpEntry& e : manifests[m].entries )
         {
-            if( epFilePathEntry( e.group ) )
+            if( epPackageJsonManifest( manifests[m].rel ) )
             {
                 const std::uint32_t f = epFileTargetFile( ing, manifests[m].dir, e.target );
                 moduleFile[m].push_back( f );
@@ -871,9 +882,14 @@ inline std::vector<std::vector<EpTarget>> resolveEpTargets( const IngestResult& 
                                                 []( NodeId a, NodeId b ) { return a < b; } );
     for( std::size_t m = 0; m < manifests.size(); ++m )
     {
+        const bool packageJson = epPackageJsonManifest( manifests[m].rel );
         for( std::size_t k = 0; k < manifests[m].entries.size(); ++k )
         {
-            epFillOneTarget( ing, manifests[m].entries[k], moduleFile[m][k], byFile[ moduleFile[m][k] ], targets[m][k] );
+            if( moduleFile[m][k] == kNoFile )
+            {
+                continue;
+            }
+            epFillOneTarget( ing, manifests[m].entries[k], moduleFile[m][k], byFile[ moduleFile[m][k] ], targets[m][k], packageJson );
         }
     }
     return targets;
